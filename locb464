@@ -1,0 +1,224 @@
+local BetterOrion = loadstring(game:HttpGet(
+    "https://raw.githubusercontent.com/m1kp0/BetterOrion/refs/heads/main/Library.lua"
+))()
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local LocalPlayer = Players.LocalPlayer
+
+local Window = BetterOrion:MakeWindow({
+    Name = "Packet Lag Logger",
+    SubName = "v1.0.0",
+    IntroEnabled = false,
+    IntroIcon = "hand",
+    IntroText = "Packet Lag Logger",
+    Size = UDim2.new(0, 600, 0, 360),
+    MinSize = UDim2.new(0, 400, 0, 200),
+    MaxSize = UDim2.new(0, 9999, 0, 9999),
+    Transparency = 0.35,
+    ToggleUIKey = Enum.KeyCode.RightShift,
+    SearchBar = false,
+    WatermarkConfig = {
+        Enabled = true,
+        Visible = true,
+        ShowFPS = true,
+        ShowPing = true,
+        ShowName = true,
+        ShowClockTime = true,
+        Icon = "activity"
+    }
+})
+
+local Tab = Window:MakeTab({
+    Name = "Log",
+    Icon = "scroll-text",
+    PremiumOnly = false
+})
+
+-- ==== Свой скролл внутри таба ====
+local function FindTabContainer(tab)
+    for _, d in ipairs(tab:GetDescendants()) do
+        if d:IsA("Frame") and not d:IsA("ScrollingFrame")
+            and d.Name ~= "Topbar" and d.Size.Y.Scale > 0.5 then
+            return d
+        end
+    end
+    return nil
+end
+
+task.wait(0.2)
+local container = FindTabContainer(Tab)
+
+local Scroll = Instance.new("ScrollingFrame")
+Scroll.Size = UDim2.new(1, -16, 1, -16)
+Scroll.Position = UDim2.new(0, 8, 0, 8)
+Scroll.BackgroundColor3 = Color3.fromRGB(235, 235, 235)
+Scroll.BackgroundTransparency = 0.1
+Scroll.BorderSizePixel = 0
+Scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+Scroll.ScrollBarThickness = 6
+Scroll.ScrollBarImageColor3 = Color3.fromRGB(150, 150, 150)
+Scroll.ScrollingDirection = Enum.ScrollingDirection.Y
+Scroll.Parent = container
+Instance.new("UICorner", Scroll).CornerRadius = UDim.new(0, 4)
+
+local Layout = Instance.new("UIListLayout")
+Layout.Padding = UDim.new(0, 2)
+Layout.SortOrder = Enum.SortOrder.LayoutOrder
+Layout.Parent = Scroll
+
+-- ==== Строки ====
+local Rows = {}
+local History = {}
+local MaxHistory = 100
+
+local function AddRow(text)
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -8, 0, 20)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = text
+    lbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+    lbl.TextSize = 13
+    lbl.Font = Enum.Font.Code
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.TextTruncate = Enum.TextTruncate.AtEnd
+    lbl.Parent = Scroll
+    table.insert(Rows, lbl)
+    table.insert(History, text)
+    while #History > MaxHistory do
+        table.remove(History, 1)
+        if Rows[1] then
+            pcall(function() Rows[1]:Destroy() end)
+            table.remove(Rows, 1)
+        end
+    end
+    local count = #Rows
+    Scroll.CanvasSize = UDim2.new(0, 0, 0, count * 22 + 6)
+    pcall(function()
+        Scroll.CanvasPosition = Vector2.new(0, math.max(0,
+            Scroll.AbsoluteCanvasSize.Y - Scroll.AbsoluteWindowSize.Y))
+    end)
+end
+
+-- ==== Детект ====
+local PacketMonitor = {
+    Interval = 5,
+    TimeoutClose = 2.5,
+    Players = {},
+    Connection = nil,
+    IdleThread = nil,
+}
+
+local function FindOwner(obj)
+    if not obj then return nil end
+    local o = obj:FindFirstChild("PartOwner")
+    if o and o:IsA("ObjectValue") and o.Value and o.Value:IsA("Player") then
+        return o.Value
+    end
+    for _, child in ipairs(obj:GetDescendants()) do
+        local o2 = child:FindFirstChild("PartOwner")
+        if o2 and o2:IsA("ObjectValue") and o2.Value and o2.Value:IsA("Player") then
+            return o2.Value
+        end
+    end
+    return nil
+end
+
+local function DetectScript(firstData)
+    local sample = string.sub(firstData, 1, 100)
+    local lower = string.lower(sample)
+    if sample:sub(1, 6):upper() == "FLOPPA" then return "TheWorst" end
+    if lower:find("polar") then return "Polar Hub" end
+    if lower:find("rsc") then return "Resonance" end
+    if lower:find("locb") then return "Locb" end
+    if lower:find("mercury") then return "Mercury" end
+    if lower:find("resonance") then return "Resonance" end
+    if sample:sub(1, 2) == "❤️" or sample:sub(1, 2) == "❤" then return "Mercury" end
+    if lower:find("00000") then return "Resonance" end
+    if lower:sub(1, 5) == "0" then return "Resonance" end
+    return "Unknown"
+end
+
+local function StartMonitor()
+    if PacketMonitor.Connection then PacketMonitor.Connection:Disconnect() end
+    local gE = ReplicatedStorage:FindFirstChild("GrabEvents")
+    if not gE then return end
+    local egl = gE:FindFirstChild("ExtendGrabLine")
+    if not egl then return end
+
+    PacketMonitor.Connection = egl.OnClientEvent:Connect(function(...)
+        local total = 0
+        local firstData = ""
+        local sender = nil
+        for _, arg in ipairs({...}) do
+            local t = typeof(arg)
+            if t == "string" then
+                total = total + #arg
+                if firstData == "" then firstData = string.sub(arg, 1, 100) end
+            elseif t == "Instance" and arg:IsA("Player") then
+                sender = arg
+            elseif t == "Instance" and arg:IsA("Part") then
+                local ow = FindOwner(arg)
+                if ow then sender = ow end
+            end
+        end
+        if total < 10000 or not sender then return end
+
+        local name = sender.Name
+        local data = PacketMonitor.Players[name]
+        local now = os.clock()
+        if not data then
+            data = {
+                lastPacketTime = 0,
+                lastNotifyTime = 0,
+                active = false,
+                size = 0,
+                script = "Unknown",
+                preview = "",
+                display = sender.DisplayName,
+            }
+            PacketMonitor.Players[name] = data
+        end
+
+        data.lastPacketTime = now
+        data.size = total
+        data.preview = string.sub(firstData, 1, 20)
+        data.script = DetectScript(firstData)
+        data.display = sender.DisplayName
+
+        local sizeStr = string.format("%.2f MB", total / 1048576)
+        local timeStr = os.date("%H:%M:%S")
+        local line = string.format("[%s] %s (%s) | %s | %s | %s",
+            timeStr, name, data.display, sizeStr, data.script, data.preview)
+
+        if not data.active then
+            data.active = true
+            data.lastNotifyTime = now
+            AddRow("Packet Lag Started — " .. line)
+        elseif now - data.lastNotifyTime >= PacketMonitor.Interval then
+            data.lastNotifyTime = now
+            AddRow(line)
+        end
+    end)
+
+    if PacketMonitor.IdleThread then task.cancel(PacketMonitor.IdleThread) end
+    PacketMonitor.IdleThread = task.spawn(function()
+        while PacketMonitor.Connection do
+            task.wait(0.5)
+            local now = os.clock()
+            for name, data in pairs(PacketMonitor.Players) do
+                if data.active and (now - data.lastPacketTime > PacketMonitor.TimeoutClose) then
+                    data.active = false
+                    local sizeStr = string.format("%.2f MB", (data.size or 0) / 1048576)
+                    local timeStr = os.date("%H:%M:%S")
+                    local line = string.format("[%s] %s (%s) | %s | %s | %s",
+                        timeStr, name, data.display, sizeStr, data.script, data.preview)
+                    AddRow("Packet Lag Stopped — " .. line)
+                end
+            end
+        end
+    end)
+end
+
+task.wait(0.3)
+StartMonitor()
